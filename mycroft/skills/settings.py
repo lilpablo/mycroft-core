@@ -66,7 +66,7 @@ import copy
 import re
 from threading import Timer
 from os.path import isfile, join, expanduser
-from requests.exceptions import RequestException
+from requests.exceptions import RequestException, HTTPError
 from msm import SkillEntry
 
 from mycroft.api import DeviceApi, is_paired
@@ -147,6 +147,7 @@ class SkillSettings(dict):
         self._poll_timer = None
         self._blank_poll_timer = None
         self._is_alive = True
+        self._meta_upload = True  # Flag allowing upload of settings meta
 
         # Add Information extracted from the skills-meta.json entry for the
         # skill.
@@ -209,12 +210,13 @@ class SkillSettings(dict):
         except RequestException:
             return
 
-        settings = self._request_my_settings(self.skill_gid)
-        if settings is None:
-            # metadata got deleted from Home, send up
-            self._upload_meta(settings_meta, self.skill_gid)
-        else:
+        settings = self._request_other_settings(self.skill_gid)
+        if settings:
             self.save_skill_settings(settings)
+
+        # Always try to upload settingsmeta on startup
+        self._upload_meta(settings_meta, self.skill_gid)
+
         self._complete_intialization = True
 
     @property
@@ -269,12 +271,19 @@ class SkillSettings(dict):
         Returns:
             dict: uuid, a unique id for the setting meta data
         """
-        try:
-            uuid = self._put_metadata(settings_meta)
-            return uuid
-        except Exception as e:
-            LOG.error(e)
-            return None
+        if self._meta_upload:
+            try:
+                uuid = self._put_metadata(settings_meta)
+                return uuid
+            except HTTPError as e:
+                if e.response.status_code == 422:
+                    self._meta_upload = False
+                    LOG.info('This is not owner and upload of settings meta'
+                             'can\'t be performed')
+
+            except Exception as e:
+                LOG.error(e)
+                return None
 
     def save_skill_settings(self, skill_settings):
         """ Takes skill object and save onto self
@@ -371,11 +380,12 @@ class SkillSettings(dict):
         settings_meta = self._load_settings_meta()
         if settings_meta is None:
             return
-        skills_settings = self._request_my_settings(self.skill_gid)
+        skills_settings = self._request_other_settings(self.skill_gid)
         if skills_settings is not None:
             self.save_skill_settings(skills_settings)
             self.store()
         else:
+            # Settings meta doesn't exist on server push them
             settings_meta = self._load_settings_meta()
             self._upload_meta(settings_meta, self.skill_gid)
 
@@ -493,27 +503,25 @@ class SkillSettings(dict):
         meta['skillMetadata']['sections'] = sections
         return meta
 
-    def _request_my_settings(self, identifier):
-        """ Get skill settings for this device associated
-            with the identifier
-
+    def _request_other_settings(self, identifier):
+        """ Retrieve skill settings from other devices by identifier
         Args:
-            identifier (str): identifier (skill_gid)
+            identifier (str): identifier for this skill
         Returns:
-            skill_settings (dict or None): returns a dict if matches
+            settings (dict or None): the retrieved settings or None
         """
-        print("GETTING SETTINGS FOR {}".format(self.name))
-        settings = self._request_settings()
-        if settings:
-            # this loads the settings into memory for use in self.store
-            for skill_settings in settings:
-                if skill_settings['identifier'] == identifier:
-                    skill_settings = \
-                        self._type_cast(skill_settings, to_platform='core')
-                    self._remote_settings = skill_settings
-                    return skill_settings
-        else:
+        path = \
+            "/" + self._device_identity + "/userSkill?identifier=" + identifier
+        try:
+            user_skill = self.api.request({"method": "GET", "path": path})
+        except RequestException:
+            # Some kind of Timeout, connection HTTPError, etc.
+            user_skill = None
+        if not user_skill or not user_skill[0]:
             return None
+        else:
+            settings = self._type_cast(user_skill[0], to_platform='core')
+        return settings
 
     def _request_settings(self):
         """ Get all skill settings for this device from server.
