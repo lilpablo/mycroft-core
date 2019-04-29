@@ -18,9 +18,6 @@
 # Set a default locale to handle output from commands reliably
 export LANG=C
 
-# exit on any error
-set -Ee
-
 cd $(dirname $0)
 TOP=$( pwd -L )
 
@@ -115,7 +112,8 @@ function get_YN() {
     done
 }
 
-if found_exe tput ; then
+# if tput exists and NO_COLOR isn't defined
+if found_exe tput  && [ -z ${NO_COLOR+x} ]; then
     GREEN="$(tput setaf 2)"
     BLUE="$(tput setaf 4)"
     CYAN="$(tput setaf 6)"
@@ -123,6 +121,10 @@ if found_exe tput ; then
     RESET="$(tput sgr0)"
     HIGHLIGHT=${YELLOW}
 fi
+
+# exit on any error
+set -Ee
+
 
 # Run a setup wizard the very first time that guides the user through some decisions
 if [[ ! -f .dev_opts.json ]] && [[ ${IS_TRAVIS} == "" ]] ; then
